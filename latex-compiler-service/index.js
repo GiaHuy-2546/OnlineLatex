@@ -1,15 +1,19 @@
 import express from 'express';
 import cors from 'cors';
+import http from 'http';
 import os from 'os';
 import path from 'path';
 import crypto from 'crypto';
 import fs from 'fs/promises';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import { WebSocketServer } from 'ws';
 
 const execFileAsync = promisify(execFile);
 
 const app = express();
+const server = http.createServer(app);
+
 const PORT = process.env.PORT || 5000;
 const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
 
@@ -25,12 +29,14 @@ app.use(express.json({ limit: '20mb' }));
 // Trang thông tin dịch vụ
 app.get('/', (req, res) => {
   res.json({
-    service: 'LaTeX Compiler Service',
+    service: 'LaTeX Compiler & Signaling Service',
     engine: 'Tectonic',
+    signaling: 'y-webrtc compatible',
     status: 'running',
     endpoints: {
       health: 'GET /health',
-      compile: 'POST /compile'
+      compile: 'POST /compile',
+      signaling: 'WS /'
     }
   });
 });
@@ -138,9 +144,110 @@ app.post('/compile', async (req, res) => {
   }
 });
 
-// Khởi chạy server
-const server = app.listen(PORT, '0.0.0.0', () => {
-  console.log(`[latex-compiler-service] Đang lắng nghe tại cổng http://0.0.0.0:${PORT}`);
+// ==============================================================================
+// TÍCH HỢP SIGNALING SERVER CHO YJS / WEBRTC (CỘNG TÁC THỜI GIAN THỰC)
+// ==============================================================================
+const wss = new WebSocketServer({ noServer: true });
+const wsTopics = new Map();
+
+const sendWsMessage = (conn, message) => {
+  if (conn.readyState === 1) { // WebSocket.OPEN
+    try {
+      conn.send(JSON.stringify(message));
+    } catch (err) {
+      conn.close();
+    }
+  }
+};
+
+wss.on('connection', (conn) => {
+  const subscribedTopics = new Set();
+  let closed = false;
+
+  const pingInterval = setInterval(() => {
+    try {
+      conn.ping();
+    } catch (e) {
+      clearInterval(pingInterval);
+      conn.close();
+    }
+  }, 30000);
+
+  conn.on('close', () => {
+    clearInterval(pingInterval);
+    closed = true;
+    subscribedTopics.forEach((topicName) => {
+      const subs = wsTopics.get(topicName);
+      if (subs) {
+        subs.delete(conn);
+        if (subs.size === 0) {
+          wsTopics.delete(topicName);
+        }
+      }
+    });
+    subscribedTopics.clear();
+  });
+
+  conn.on('message', (raw) => {
+    try {
+      const message = typeof raw === 'string' || raw instanceof Buffer ? JSON.parse(raw) : raw;
+      if (message && message.type && !closed) {
+        switch (message.type) {
+          case 'subscribe':
+            (message.topics || []).forEach((topicName) => {
+              if (typeof topicName === 'string') {
+                if (!wsTopics.has(topicName)) {
+                  wsTopics.set(topicName, new Set());
+                }
+                wsTopics.get(topicName).add(conn);
+                subscribedTopics.add(topicName);
+              }
+            });
+            break;
+          case 'unsubscribe':
+            (message.topics || []).forEach((topicName) => {
+              const subs = wsTopics.get(topicName);
+              if (subs) {
+                subs.delete(conn);
+                if (subs.size === 0) {
+                  wsTopics.delete(topicName);
+                }
+              }
+              subscribedTopics.delete(topicName);
+            });
+            break;
+          case 'publish':
+            if (message.topic) {
+              const receivers = wsTopics.get(message.topic);
+              if (receivers) {
+                message.clients = receivers.size;
+                receivers.forEach((receiver) => {
+                  sendWsMessage(receiver, message);
+                });
+              }
+            }
+            break;
+          case 'ping':
+            sendWsMessage(conn, { type: 'pong' });
+            break;
+        }
+      }
+    } catch (e) {
+      // Ignore invalid JSON messages
+    }
+  });
+});
+
+// Xử lý WebSocket Upgrade từ cùng một cổng HTTP của compiler service
+server.on('upgrade', (request, socket, head) => {
+  wss.handleUpgrade(request, socket, head, (ws) => {
+    wss.emit('connection', ws, request);
+  });
+});
+
+// Khởi chạy server kết hợp HTTP & WebSocket
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`[latex-compiler-service] Đang lắng nghe tại http://0.0.0.0:${PORT} (HTTP & WebSocket Signaling)`);
   console.log(`[latex-compiler-service] Môi trường: ${process.env.NODE_ENV || 'development'}`);
 });
 
@@ -155,4 +262,3 @@ const handleShutdown = (signal) => {
 
 process.on('SIGTERM', () => handleShutdown('SIGTERM'));
 process.on('SIGINT', () => handleShutdown('SIGINT'));
-

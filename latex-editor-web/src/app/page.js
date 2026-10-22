@@ -117,16 +117,24 @@ function LatexStudio() {
   const searchParams = useSearchParams();
   const router = useRouter();
 
-  // Xác định Room ID từ URL searchParams hoặc tạo ngẫu nhiên
+  // Xác định Room ID từ URL searchParams hoặc mặc định
   const urlRoom = searchParams.get('room');
   const [roomId, setRoomId] = useState(urlRoom || 'room-chung');
   const [roomInput, setRoomInput] = useState(urlRoom || 'room-chung');
 
+  // Khởi tạo thông tin người dùng cục bộ cố định (không bị re-render đổi thông tin)
+  const [localUser] = useState(() => {
+    const randomColor = USER_COLORS[Math.floor(Math.random() * USER_COLORS.length)];
+    const randomId = Math.floor(1000 + Math.random() * 9000);
+    return {
+      name: `Thành viên #${randomId}`,
+      color: randomColor,
+    };
+  });
+
   // Trạng thái kết nối & cộng tác
   const [connectionStatus, setConnectionStatus] = useState('connecting'); // 'connecting' | 'connected' | 'disconnected'
   const [peers, setPeers] = useState([]);
-  const [currentUserName, setCurrentUserName] = useState('');
-  const [currentUserColor, setCurrentUserColor] = useState('');
 
   // Trạng thái biên dịch & hiển thị
   const [isCompiling, setIsCompiling] = useState(false);
@@ -143,15 +151,7 @@ function LatexStudio() {
   const ydocRef = useRef(null);
   const providerRef = useRef(null);
   const bindingRef = useRef(null);
-
-  // Khởi tạo thông tin người dùng cục bộ một lần
-  useEffect(() => {
-    const randomColor = USER_COLORS[Math.floor(Math.random() * USER_COLORS.length)];
-    const randomId = Math.floor(1000 + Math.random() * 9000);
-    const name = `Thành viên #${randomId}`;
-    setCurrentUserName(name);
-    setCurrentUserColor(randomColor);
-  }, []);
+  const currentRoomRef = useRef(null);
 
   // Cập nhật roomId từ URL nếu URL thay đổi
   useEffect(() => {
@@ -231,10 +231,10 @@ function LatexStudio() {
     }
   }, [isCompiling, pdfBlobUrl]);
 
-  // Thiết lập Yjs & WebRTC Collab khi editor và roomId sẵn sàng
-  const setupCollaboration = useCallback(async (editor, monaco, currentRoom) => {
+  // Thiết lập Yjs & WebRTC Collab
+  const setupCollaboration = useCallback(async (editor, monaco, targetRoom) => {
     try {
-      // Dọn dẹp session cũ nếu có
+      // Dọn dẹp session cũ nếu đã có
       if (bindingRef.current) {
         bindingRef.current.destroy();
         bindingRef.current = null;
@@ -248,6 +248,7 @@ function LatexStudio() {
         ydocRef.current = null;
       }
 
+      currentRoomRef.current = targetRoom;
       setConnectionStatus('connecting');
 
       // Dynamic import các thư viện collab phía client
@@ -259,31 +260,53 @@ function LatexStudio() {
       const ydoc = new Y.Doc();
       ydocRef.current = ydoc;
 
-      // Danh sách signaling server công khai đáng tin cậy
-      const signalingServers = [
-        'wss://signaling.yjs.dev',
-        'wss://y-webrtc-signaling-eu.herokuapp.com',
-        'wss://y-webrtc-signaling-us.herokuapp.com'
-      ];
+      // Xác định danh sách signaling server:
+      // 1. Biến môi trường tùy chỉnh
+      // 2. Local signaling chạy kèm compiler-service (ws://localhost:5000)
+      // 3. Compiler URL production nếu có (chuyển https sang wss)
+      const signalingServers = [];
+
+      if (process.env.NEXT_PUBLIC_SIGNALING_URL) {
+        signalingServers.push(process.env.NEXT_PUBLIC_SIGNALING_URL);
+      }
+
+      if (typeof window !== 'undefined') {
+        const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+        if (isLocal) {
+          signalingServers.push('ws://localhost:5000');
+        }
+      }
+
+      if (process.env.NEXT_PUBLIC_COMPILER_URL) {
+        const compilerWs = process.env.NEXT_PUBLIC_COMPILER_URL
+          .replace(/^http:\/\//, 'ws://')
+          .replace(/^https:\/\//, 'wss://');
+        if (!signalingServers.includes(compilerWs)) {
+          signalingServers.push(compilerWs);
+        }
+      }
+
+      // Dự phòng máy chủ cộng đồng nếu không cấu hình
+      if (signalingServers.length === 0) {
+        signalingServers.push('wss://y-webrtc-eu.fly.dev');
+      }
 
       // Khởi tạo WebRTC Provider
-      const roomChannelName = `latex-studio-${currentRoom}`;
+      const roomChannelName = `latex-studio-${targetRoom}`;
       const provider = new WebrtcProvider(roomChannelName, ydoc, {
         signaling: signalingServers,
         password: null,
+        filterBcConns: false, // Cho phép giao tiếp đa kênh giữa các tab
       });
       providerRef.current = provider;
 
       // Cài đặt thông tin nhận diện Awareness (Tên & Màu con trỏ)
-      const userColor = currentUserColor || USER_COLORS[Math.floor(Math.random() * USER_COLORS.length)];
-      const userName = currentUserName || `Người dùng #${Math.floor(100 + Math.random() * 900)}`;
-
       provider.awareness.setLocalStateField('user', {
-        name: userName,
-        color: userColor,
+        name: localUser.name,
+        color: localUser.color,
       });
 
-      // Lắng nghe trạng thái người dùng trong phòng
+      // Lắng nghe cập nhật người dùng trong phòng
       const updatePeers = () => {
         const states = provider.awareness.getStates();
         const peerList = [];
@@ -298,13 +321,18 @@ function LatexStudio() {
           }
         });
         setPeers(peerList);
-        setConnectionStatus(provider.connected ? 'connected' : 'connecting');
+        setConnectionStatus(peerList.length > 0 ? 'connected' : 'connecting');
       };
 
       provider.awareness.on('change', updatePeers);
       provider.on('status', (event) => {
-        setConnectionStatus(event.status === 'connected' ? 'connected' : 'connecting');
+        if (event.status === 'connected') {
+          setConnectionStatus('connected');
+        }
       });
+
+      // Cập nhật trạng thái peers ngay ban đầu
+      updatePeers();
 
       // Binding Yjs text vào Monaco Editor Model
       const yText = ydoc.getText('monaco');
@@ -322,7 +350,6 @@ function LatexStudio() {
       provider.on('synced', (event) => {
         if (event.synced) {
           setConnectionStatus('connected');
-          // Nếu sau khi đồng bộ mà nội dung vẫn rỗng, nạp template mặc định
           if (yText.length === 0) {
             yText.insert(0, DEFAULT_LATEX_TEMPLATE);
           }
@@ -334,13 +361,13 @@ function LatexStudio() {
         if (yText.length === 0 && editor.getValue().trim() === '') {
           yText.insert(0, DEFAULT_LATEX_TEMPLATE);
         }
-      }, 800);
+      }, 1000);
 
     } catch (error) {
       console.error('Lỗi khởi tạo WebRTC/Yjs:', error);
       setConnectionStatus('disconnected');
     }
-  }, [currentUserName, currentUserColor]);
+  }, [localUser]);
 
   // Xử lý khi Monaco Editor mount
   const handleEditorDidMount = (editor, monaco) => {
@@ -360,7 +387,7 @@ function LatexStudio() {
   useEffect(() => {
     const handleGlobalKeyDown = (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
-        e.preventDefault(); // Ngăn trình duyệt mở hộp thoại Save
+        e.preventDefault();
         handleCompile();
       }
     };
@@ -369,25 +396,20 @@ function LatexStudio() {
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
   }, [handleCompile]);
 
-  // Dọn dẹp bộ nhớ và provider khi đổi phòng hoặc unmount
+  // Tái khởi tạo Collab khi roomId thay đổi
   useEffect(() => {
-    if (editorRef.current && monacoRef.current) {
+    if (editorRef.current && monacoRef.current && currentRoomRef.current !== roomId) {
       setupCollaboration(editorRef.current, monacoRef.current, roomId);
     }
+  }, [roomId, setupCollaboration]);
 
+  // Dọn dẹp khi unmount trang
+  useEffect(() => {
     return () => {
       if (bindingRef.current) bindingRef.current.destroy();
       if (providerRef.current) providerRef.current.destroy();
       if (ydocRef.current) ydocRef.current.destroy();
-    };
-  }, [roomId, setupCollaboration]);
-
-  // Dọn dẹp PDF Blob URL khi unmount
-  useEffect(() => {
-    return () => {
-      if (pdfBlobUrl) {
-        URL.revokeObjectURL(pdfBlobUrl);
-      }
+      if (pdfBlobUrl) URL.revokeObjectURL(pdfBlobUrl);
     };
   }, [pdfBlobUrl]);
 
@@ -492,7 +514,7 @@ function LatexStudio() {
         {/* THÔNG TIN KẾT NỐI & DANH SÁCH PEERS */}
         <div className="flex items-center space-x-3">
           
-          {/* Trạng thái kết nối WebRTC */}
+          {/* Trạng thái kết nối */}
           <div className="hidden lg:flex items-center space-x-2 px-2.5 py-1 rounded-full bg-slate-800/80 border border-slate-700/60 text-xs">
             {connectionStatus === 'connected' ? (
               <>
@@ -608,7 +630,7 @@ function LatexStudio() {
 
             <div className="flex items-center space-x-2">
               <span className="text-[11px] text-slate-500">
-                Bạn: <strong style={{ color: currentUserColor }}>{currentUserName}</strong>
+                Bạn: <strong style={{ color: localUser.color }}>{localUser.name}</strong>
               </span>
             </div>
           </div>
@@ -816,4 +838,3 @@ export default function Page() {
     </Suspense>
   );
 }
-
