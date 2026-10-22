@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: latex-compiler-service
+    env: docker
+    dockerfilePath: ./latex-compiler-service/Dockerfile
+    dockerContext: ./latex-compiler-service
+    plan: free
+    region: singapore
+    envVars:
+      - key: PORT
+        value: 5000
+      - key: CORS_ORIGIN
+        value: "*"
+

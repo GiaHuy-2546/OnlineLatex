@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  # Microservice biên dịch LaTeX với Tectonic Engine
+  compiler:
+    build:
+      context: ./latex-compiler-service
+      dockerfile: Dockerfile
+    container_name: latex-compiler-service
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      - PORT=5000
+      - CORS_ORIGIN=*
+
+  # Ứng dụng Web Studio Next.js 14
+  web:
+    build:
+      context: ./latex-editor-web
+      dockerfile: Dockerfile
+    container_name: latex-editor-web
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - COMPILER_SERVICE_URL=http://compiler:5000
+    depends_on:
+      - compiler
+

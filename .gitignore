@@ -1,0 +1,84 @@
+# ==============================================================================
+# Git Ignore cho LaTeX Online Studio (Overleaf Clone)
+# ==============================================================================
+
+# Dependencies (Thư viện phụ thuộc)
+node_modules/
+*/node_modules/
+**/node_modules/
+.pnp
+.pnp.js
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Next.js & Frontend Build Output
+.next/
+*/.next/
+**/.next/
+out/
+*/out/
+build/
+*/build/
+dist/
+*/dist/
+
+# Biến môi trường cục bộ (Bảo mật - Không commit)
+.env
+.env*.local
+*.env.local
+*.env.*.local
+!*.env.example
+!**/.env.example
+
+# Vercel deployment cache
+.vercel/
+
+# TypeScript / Linter Cache
+*.tsbuildinfo
+next-env.d.ts
+.eslintcache
+
+# LaTeX temporary compilation files
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.dvi
+*.fdb_latexmk
+*.fls
+*.idx
+*.ilg
+*.ind
+*.log
+*.nav
+*.out
+*.run.xml
+*.snm
+*.synctex*
+*.toc
+*.vrb
+
+# Hệ điều hành & Editor
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDEs
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Temporary & Cache
+tmp/
+temp/
+scratch/
+.cache/
+
