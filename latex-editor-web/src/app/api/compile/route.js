@@ -6,9 +6,9 @@ export async function POST(request) {
   try {
     const body = await request.json().catch(() => null);
 
-    if (!body || typeof body.code !== 'string') {
+    if (!body || (!body.code && !body.files)) {
       return NextResponse.json(
-        { error: 'Lỗi yêu cầu', logs: 'Mã LaTeX không hợp lệ hoặc thiếu thuộc tính "code".' },
+        { error: 'Lỗi yêu cầu', logs: 'Mã LaTeX không hợp lệ hoặc thiếu thuộc tính "code" / "files".' },
         { status: 400 }
       );
     }
@@ -17,7 +17,7 @@ export async function POST(request) {
     const compilerBaseUrl = process.env.COMPILER_SERVICE_URL || process.env.NEXT_PUBLIC_COMPILER_URL || 'http://localhost:5000';
     const targetUrl = `${compilerBaseUrl.replace(/\/+$/, '')}/compile`;
 
-    // Gọi chuyển tiếp request tới Compiler Service
+    // Gọi chuyển tiếp request tới Compiler Service (hỗ trợ cả multi-file)
     let compilerResponse;
     try {
       compilerResponse = await fetch(targetUrl, {
@@ -25,7 +25,11 @@ export async function POST(request) {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ code: body.code }),
+        body: JSON.stringify({
+          code: body.code,
+          mainFile: body.mainFile || 'main.tex',
+          files: body.files || {}
+        }),
         signal: AbortSignal.timeout(45000), // Cho phép tối đa 45 giây (30s compile + overhead mạng)
       });
     } catch (fetchError) {
@@ -80,4 +84,3 @@ export async function POST(request) {
     );
   }
 }
-

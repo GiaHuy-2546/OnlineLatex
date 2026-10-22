@@ -38,7 +38,7 @@ ENV PORT=5000
 
 COPY package*.json ./
 COPY --from=deps /app/node_modules ./node_modules
-COPY index.js ./
+COPY index.js db.js ./
 
 EXPOSE 5000
 

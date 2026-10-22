@@ -81,4 +81,6 @@ tmp/
 temp/
 scratch/
 .cache/
+data/
+*/data/
 
