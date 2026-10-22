@@ -27,8 +27,11 @@ RUN apk add --no-cache \
     zlib
 
 # Tải trước (pre-cache) các gói cơ bản của Tectonic vào cache để biên dịch lần đầu siêu tốc
-RUN mkdir -p /root/.cache/Tectonic && \
-    tectonic - <<< "\documentclass{article}\begin{document}Ready\end{document}" > /dev/null 2>&1 || true
+# Sử dụng cú pháp tương thích POSIX /bin/sh (Alpine Linux không dùng Bash)
+RUN mkdir -p /root/.cache/Tectonic /tmp/init && \
+    printf '%s\n' '\documentclass{article}\begin{document}Ready\end{document}' > /tmp/init/init.tex && \
+    (cd /tmp/init && tectonic init.tex > /dev/null 2>&1 || true) && \
+    rm -rf /tmp/init
 
 ENV NODE_ENV=production
 ENV PORT=5000
@@ -41,4 +44,3 @@ EXPOSE 5000
 
 # Khởi chạy Compiler Server
 CMD ["node", "index.js"]
-
