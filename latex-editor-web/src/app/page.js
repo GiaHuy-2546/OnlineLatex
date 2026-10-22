@@ -122,7 +122,7 @@ function LatexStudio() {
   const [roomId, setRoomId] = useState(urlRoom || 'room-chung');
   const [roomInput, setRoomInput] = useState(urlRoom || 'room-chung');
 
-  // Khởi tạo thông tin người dùng cục bộ cố định (không bị re-render đổi thông tin)
+  // Khởi tạo thông tin người dùng cục bộ cố định
   const [localUser] = useState(() => {
     const randomColor = USER_COLORS[Math.floor(Math.random() * USER_COLORS.length)];
     const randomId = Math.floor(1000 + Math.random() * 9000);
@@ -135,6 +135,7 @@ function LatexStudio() {
   // Trạng thái kết nối & cộng tác
   const [connectionStatus, setConnectionStatus] = useState('connecting'); // 'connecting' | 'connected' | 'disconnected'
   const [peers, setPeers] = useState([]);
+  const [serverSignalingUrl, setServerSignalingUrl] = useState('');
 
   // Trạng thái biên dịch & hiển thị
   const [isCompiling, setIsCompiling] = useState(false);
@@ -152,6 +153,20 @@ function LatexStudio() {
   const providerRef = useRef(null);
   const bindingRef = useRef(null);
   const currentRoomRef = useRef(null);
+
+  // Lấy URL Signaling từ API /api/config động để đảm bảo 100% khớp với biến môi trường backend trên Vercel/Render
+  useEffect(() => {
+    fetch('/api/config')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data && data.signalingUrl) {
+          setServerSignalingUrl(data.signalingUrl);
+        }
+      })
+      .catch((err) => {
+        console.warn('Không thể nạp /api/config động:', err);
+      });
+  }, []);
 
   // Cập nhật roomId từ URL nếu URL thay đổi
   useEffect(() => {
@@ -260,43 +275,43 @@ function LatexStudio() {
       const ydoc = new Y.Doc();
       ydocRef.current = ydoc;
 
-      // Xác định danh sách signaling server:
-      // 1. Biến môi trường tùy chỉnh
-      // 2. Local signaling chạy kèm compiler-service (ws://localhost:5000)
-      // 3. Compiler URL production nếu có (chuyển https sang wss)
+      // Danh sách signaling server thông minh:
+      // 1. URL lấy động từ /api/config (chứa domain Render wss://...)
+      // 2. Localhost fallback nếu đang test máy cá nhân
+      // 3. Fallback dự phòng cộng đồng
       const signalingServers = [];
 
-      if (process.env.NEXT_PUBLIC_SIGNALING_URL) {
-        signalingServers.push(process.env.NEXT_PUBLIC_SIGNALING_URL);
+      if (serverSignalingUrl) {
+        signalingServers.push(serverSignalingUrl);
       }
 
       if (typeof window !== 'undefined') {
         const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-        if (isLocal) {
+        if (isLocal && !signalingServers.includes('ws://localhost:5000')) {
           signalingServers.push('ws://localhost:5000');
         }
       }
 
-      if (process.env.NEXT_PUBLIC_COMPILER_URL) {
-        const compilerWs = process.env.NEXT_PUBLIC_COMPILER_URL
-          .replace(/^http:\/\//, 'ws://')
-          .replace(/^https:\/\//, 'wss://');
-        if (!signalingServers.includes(compilerWs)) {
-          signalingServers.push(compilerWs);
-        }
-      }
-
-      // Dự phòng máy chủ cộng đồng nếu không cấu hình
-      if (signalingServers.length === 0) {
-        signalingServers.push('wss://y-webrtc-eu.fly.dev');
-      }
+      // STUN Servers chuẩn chất lượng cao của Google & Cloudflare
+      // Đảm bảo WebRTC vượt qua được NAT, Tường lửa, và chế độ Ẩn danh (Incognito mDNS masking)
+      const iceServers = [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun.cloudflare.com:3478' }
+      ];
 
       // Khởi tạo WebRTC Provider
       const roomChannelName = `latex-studio-${targetRoom}`;
       const provider = new WebrtcProvider(roomChannelName, ydoc, {
         signaling: signalingServers,
         password: null,
-        filterBcConns: false, // Cho phép giao tiếp đa kênh giữa các tab
+        filterBcConns: false, // Bắt buộc false để WebRTC trao đổi trực tiếp giữa tab thường và tab ẩn danh
+        peerOpts: {
+          config: {
+            iceServers: iceServers,
+          }
+        }
       });
       providerRef.current = provider;
 
@@ -331,7 +346,7 @@ function LatexStudio() {
         }
       });
 
-      // Cập nhật trạng thái peers ngay ban đầu
+      // Cập nhật trạng thái peers ban đầu
       updatePeers();
 
       // Binding Yjs text vào Monaco Editor Model
@@ -356,18 +371,18 @@ function LatexStudio() {
         }
       });
 
-      // Fallback nạp template nếu phòng tạo đầu tiên chưa nhận event synced
+      // Fallback nạp template nếu chưa nhận event synced sau 1.2s
       setTimeout(() => {
         if (yText.length === 0 && editor.getValue().trim() === '') {
           yText.insert(0, DEFAULT_LATEX_TEMPLATE);
         }
-      }, 1000);
+      }, 1200);
 
     } catch (error) {
       console.error('Lỗi khởi tạo WebRTC/Yjs:', error);
       setConnectionStatus('disconnected');
     }
-  }, [localUser]);
+  }, [localUser, serverSignalingUrl]);
 
   // Xử lý khi Monaco Editor mount
   const handleEditorDidMount = (editor, monaco) => {
@@ -396,12 +411,12 @@ function LatexStudio() {
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
   }, [handleCompile]);
 
-  // Tái khởi tạo Collab khi roomId thay đổi
+  // Tái kết nối Collab khi roomId hoặc serverSignalingUrl sẵn sàng
   useEffect(() => {
-    if (editorRef.current && monacoRef.current && currentRoomRef.current !== roomId) {
+    if (editorRef.current && monacoRef.current) {
       setupCollaboration(editorRef.current, monacoRef.current, roomId);
     }
-  }, [roomId, setupCollaboration]);
+  }, [roomId, serverSignalingUrl, setupCollaboration]);
 
   // Dọn dẹp khi unmount trang
   useEffect(() => {
@@ -514,7 +529,7 @@ function LatexStudio() {
         {/* THÔNG TIN KẾT NỐI & DANH SÁCH PEERS */}
         <div className="flex items-center space-x-3">
           
-          {/* Trạng thái kết nối */}
+          {/* Trạng thái kết nối P2P / WebSocket */}
           <div className="hidden lg:flex items-center space-x-2 px-2.5 py-1 rounded-full bg-slate-800/80 border border-slate-700/60 text-xs">
             {connectionStatus === 'connected' ? (
               <>

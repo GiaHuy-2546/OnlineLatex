@@ -29,10 +29,11 @@ app.use(express.json({ limit: '20mb' }));
 // Trang thông tin dịch vụ
 app.get('/', (req, res) => {
   res.json({
-    service: 'LaTeX Compiler & Signaling Service',
+    service: 'LaTeX Compiler & WebRTC Signaling Service',
     engine: 'Tectonic',
     signaling: 'y-webrtc compatible',
     status: 'running',
+    activeWsConnections: wss.clients.size,
     endpoints: {
       health: 'GET /health',
       compile: 'POST /compile',
@@ -48,6 +49,7 @@ app.get('/health', async (req, res) => {
     res.json({
       status: 'healthy',
       tectonic: stdout.trim(),
+      activeWsClients: wss.clients.size,
       uptime: process.uptime()
     });
   } catch (error) {
@@ -55,6 +57,7 @@ app.get('/health', async (req, res) => {
       status: 'degraded',
       warning: 'Tectonic CLI chưa được cài đặt trong môi trường này hoặc không tìm thấy trong PATH',
       error: error.message,
+      activeWsClients: wss.clients.size,
       uptime: process.uptime()
     });
   }
@@ -160,7 +163,10 @@ const sendWsMessage = (conn, message) => {
   }
 };
 
-wss.on('connection', (conn) => {
+wss.on('connection', (conn, req) => {
+  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+  console.log(`[Signaling] Client đã kết nối từ IP: ${ip} (Tổng clients: ${wss.clients.size})`);
+  
   const subscribedTopics = new Set();
   let closed = false;
 
@@ -186,6 +192,7 @@ wss.on('connection', (conn) => {
       }
     });
     subscribedTopics.clear();
+    console.log(`[Signaling] Client ngắt kết nối. Còn lại: ${wss.clients.size}`);
   });
 
   conn.on('message', (raw) => {
@@ -201,6 +208,7 @@ wss.on('connection', (conn) => {
                 }
                 wsTopics.get(topicName).add(conn);
                 subscribedTopics.add(topicName);
+                console.log(`[Signaling] Client tham gia topic phòng: "${topicName}" (Số người trong phòng: ${wsTopics.get(topicName).size})`);
               }
             });
             break;
